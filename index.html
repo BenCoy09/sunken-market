@@ -309,7 +309,8 @@ async function loadAssets(onProgress) {
   await Promise.all(keys.map(async key => {
     const def = ASSETS[key]; let root, anims = [];
     try {
-      const gltf = await loader.loadAsync(def.url);
+      // Safety net: if a model takes >30s (slow phone connection), use the stand-in instead of hanging
+      const gltf = await Promise.race([loader.loadAsync(def.url), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 30000))]);
       root = gltf.scene; anims = gltf.animations || []; custom++;
     } catch (e) { console.warn('GLB failed, using stand-in:', def.url, e); root = def.fallback(); }
     const t = normalize(root, def.size, def.pivot); t.userData.anims = anims; templates[key] = t;
