@@ -9,7 +9,10 @@
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html,body { margin:0; height:100%; overflow:hidden; background:#06242f; color:var(--ink);
     font-family:"Iowan Old Style","Palatino Linotype",Georgia,serif; touch-action:none; user-select:none; }
-  canvas { display:block; position:fixed; inset:0; }
+  canvas { display:block; position:fixed; inset:0; z-index:0; }
+  body > canvas { pointer-events:none; }
+  #hud { z-index:10; }
+  .overlay { z-index:20; }
 
   /* ---------- Overlays (start / win) ---------- */
   .overlay { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -405,6 +408,14 @@ renderer.setPixelRatio(Math.min(devicePixelRatio || 1, MAX_PIXEL_RATIO));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+renderer.domElement.id = 'sunken-market-canvas';
+renderer.domElement.style.position = 'fixed';
+renderer.domElement.style.inset = '0';
+renderer.domElement.style.width = '100vw';
+renderer.domElement.style.height = '100dvh';
+renderer.domElement.style.zIndex = '0';
+renderer.domElement.style.display = 'block';
+renderer.domElement.style.pointerEvents = 'none';
 document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
@@ -641,19 +652,7 @@ function initMeta(){
  $('closeStory').onclick=closeStory;
  $('beginChapter').onclick=()=>{
   closeStory();
-  if(selectedChapter===1){
-    $('start').classList.add('hidden');
-    $('hud').classList.add('on');
-    running=true;
-    startTime=performance.now();
-    cam.yaw=0;
-    cam.pitch=.15;
-    player.rig.position.copy(player.pos);
-    updateCamera(1);
-    startAudio();
-    if(!IS_TOUCH)renderer.domElement.requestPointerLock?.();
-    toast('Follow your journal. The signal is waiting.');
-  }
+  if(selectedChapter===1){$('start').classList.add('hidden');$('hud').classList.add('on');running=true;startTime=performance.now();cam.yaw=0;cam.pitch=.15;startAudio();if(!IS_TOUCH)renderer.domElement.requestPointerLock?.();toast('Follow your journal. The signal is waiting.');}
   else toast('This chapter is unlocked in your story map. Its full mission is coming in the next content update.');
  };
 }
@@ -885,28 +884,56 @@ const clock = new THREE.Clock();
 let lastTouchFrame = 0;
 function frame(now = 0) {
   requestAnimationFrame(frame);
-  // Keep lower-powered touch devices near 30 FPS instead of repeatedly rendering
-  // frames they cannot sustain. Desktop remains uncapped.
   if (IS_TOUCH && now - lastTouchFrame < 1000 / 30) return;
   if (IS_TOUCH) lastTouchFrame = now;
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
-  if (running) { updatePlayer(dt, t); updateCamera(dt); updateItems(t, dt); if (!won) updateCompass(); }
-  else { // slow cinematic drift behind the start screen
-    cam.yaw += dt * 0.05; updateCamera(dt);
+
+  // Render the world first. A non-essential animation/UI update must never
+  // prevent the WebGL scene from being drawn on mobile Safari.
+  try {
+    renderer.render(scene, camera);
+  } catch (err) {
+    console.error('Sunken Market WebGL render error:', err);
+    return;
   }
-  // Ambient motion
-  caustics.offset.set(t * 0.012, t * 0.008);
-  for (const s of shafts) { s.rotation.z = Math.sin(t * 0.15 + s.userData.ph) * 0.06; s.material.opacity = 0.045 + Math.sin(t * 0.4 + s.userData.ph) * 0.02; }
-  const sp = snowPos, px = player.pos.x, py = player.pos.y, pz = player.pos.z, H = SNOW_BOX / 2;
-  for (let i = 0; i < SNOW; i++) {
-    const j = i * 3; sp[j + 1] -= dt * 0.15; sp[j] += Math.sin(t * 0.3 + i) * dt * 0.1;
-    if (sp[j] - px > H) sp[j] -= SNOW_BOX; else if (sp[j] - px < -H) sp[j] += SNOW_BOX;
-    if (sp[j + 1] - py > H) sp[j + 1] -= SNOW_BOX; else if (sp[j + 1] - py < -H) sp[j + 1] += SNOW_BOX;
-    if (sp[j + 2] - pz > H) sp[j + 2] -= SNOW_BOX; else if (sp[j + 2] - pz < -H) sp[j + 2] += SNOW_BOX;
+
+  try {
+    if (running) {
+      updatePlayer(dt, t);
+      updateCamera(dt);
+      updateItems(t, dt);
+      if (!won) updateCompass();
+    } else {
+      cam.yaw += dt * 0.05;
+      updateCamera(dt);
+    }
+
+    caustics.offset.set(t * 0.012, t * 0.008);
+    for (const shaft of shafts) {
+      shaft.rotation.z = Math.sin(t * 0.15 + shaft.userData.ph) * 0.06;
+      shaft.material.opacity = 0.045 + Math.sin(t * 0.4 + shaft.userData.ph) * 0.02;
+    }
+    const sp = snowPos, px = player.pos.x, py = player.pos.y, pz = player.pos.z, H = SNOW_BOX / 2;
+    for (let i = 0; i < SNOW; i++) {
+      const j = i * 3;
+      sp[j + 1] -= dt * 0.15;
+      sp[j] += Math.sin(t * 0.3 + i) * dt * 0.1;
+      if (sp[j] - px > H) sp[j] -= SNOW_BOX; else if (sp[j] - px < -H) sp[j] += SNOW_BOX;
+      if (sp[j + 1] - py > H) sp[j + 1] -= SNOW_BOX; else if (sp[j + 1] - py < -H) sp[j + 1] += SNOW_BOX;
+      if (sp[j + 2] - pz > H) sp[j + 2] -= SNOW_BOX; else if (sp[j + 2] - pz < -H) sp[j + 2] += SNOW_BOX;
+    }
+    snowGeo.attributes.position.needsUpdate = true;
+    updateFish(t);
+  } catch (err) {
+    console.error('Sunken Market update error:', err);
   }
-  snowGeo.attributes.position.needsUpdate = true;
-  updateFish(t);
-  composer ? composer.render() : renderer.render(scene, camera);
+
+  // Draw again with the latest camera and object transforms.
+  try {
+    renderer.render(scene, camera);
+  } catch (err) {
+    console.error('Sunken Market render error:', err);
+  }
 }
 
 async function boot() {
@@ -915,7 +942,11 @@ async function boot() {
   const info = $('loadinfo');
   const custom = await loadAssets((i, n, c) => { info.textContent = `Preparing the market… ${i}/${n}`; });
   buildWorld(); buildFish(); buildItems(); buildPlayerRig(); setupComposer();
-  cam.pos.set(0, 12, 60); camera.position.copy(cam.pos);
+  player.rig.position.copy(player.pos);
+  player.rig.visible = true;
+  cam.pos.set(0, 12, 60);
+  camera.position.copy(cam.pos);
+  camera.lookAt(player.pos.x, player.pos.y + 0.9, player.pos.z);
   info.textContent = custom ? `${custom}/${Object.keys(ASSETS).length} custom GLB models loaded` : 'No GLB models found: using built-in stand-ins (see ASSET_PROMPTS.md)';
   const btn = $('goBtn'); btn.disabled = false; btn.textContent = 'DIVE IN';
   btn.onclick = () => {
