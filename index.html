@@ -641,7 +641,19 @@ function initMeta(){
  $('closeStory').onclick=closeStory;
  $('beginChapter').onclick=()=>{
   closeStory();
-  if(selectedChapter===1){$('start').classList.add('hidden');$('hud').classList.add('on');running=true;startTime=performance.now();cam.yaw=0;cam.pitch=.15;startAudio();if(!IS_TOUCH)renderer.domElement.requestPointerLock?.();toast('Follow your journal. The signal is waiting.');}
+  if(selectedChapter===1){
+    $('start').classList.add('hidden');
+    $('hud').classList.add('on');
+    running=true;
+    startTime=performance.now();
+    cam.yaw=0;
+    cam.pitch=.15;
+    player.rig.position.copy(player.pos);
+    updateCamera(1);
+    startAudio();
+    if(!IS_TOUCH)renderer.domElement.requestPointerLock?.();
+    toast('Follow your journal. The signal is waiting.');
+  }
   else toast('This chapter is unlocked in your story map. Its full mission is coming in the next content update.');
  };
 }
@@ -716,7 +728,12 @@ const cam = { yaw: 0, pitch: 0.12, pos: new THREE.Vector3() };
 const keys = {}; const touch = { x: 0, y: 0, up: false, down: false };
 
 function buildPlayerRig() {
-  player.model = templates.player; player.rig.add(player.model); scene.add(player.rig);
+  player.model = templates.player;
+  player.rig.add(player.model);
+  player.rig.position.copy(player.pos);
+  player.rig.visible = true;
+  player.model.visible = true;
+  scene.add(player.rig);
   const anims = player.model.userData.anims;
   if (anims && anims.length) { player.mixer = new THREE.AnimationMixer(player.model); player.mixer.clipAction(anims[0]).play(); }
   player.rig.rotation.y = Math.PI;                        // start facing -Z (toward the plaza)
