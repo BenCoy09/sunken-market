@@ -32,7 +32,7 @@
   /* ---------- HUD ---------- */
   #hud { position:fixed; inset:0; pointer-events:none; z-index:10; opacity:0; transition:opacity 1s; }
   #hud.on { opacity:1; }
-  #journal { position:absolute; top:14px; left:14px; width:min(300px,62vw); padding:12px 14px; background:var(--panel);
+  #journal { position:absolute; top:62px; left:14px; width:min(300px,calc(100vw - 120px)); pointer-events:auto; cursor:pointer; padding:12px 14px; background:var(--panel);
     border:1px solid rgba(160,245,255,.3); border-radius:14px; backdrop-filter:blur(6px); font-size:.88rem; }
   #journal h2 { margin:0 0 8px; font-size:.95rem; font-weight:400; letter-spacing:.2em; color:var(--glow); }
   #journal ul { list-style:none; margin:0; padding:0; }
@@ -41,7 +41,7 @@
   #journal li.done { opacity:.5; text-decoration:line-through; }
   #journal li .hint { display:block; font-style:italic; opacity:.75; font-size:.8rem; }
   #journal.collapsed ul { display:none; }
-  #compass { position:absolute; top:14px; right:14px; width:92px; text-align:center; font-size:.75rem; }
+  #compass { position:absolute; top:62px; right:14px; width:92px; text-align:center; font-size:.75rem; }
   #compass .ring { width:64px; height:64px; margin:0 auto 4px; border-radius:50%; border:1px solid rgba(160,245,255,.45);
     background:var(--panel); position:relative; }
   #arrow { position:absolute; left:50%; top:50%; width:0; height:0; margin:-22px 0 0 -7px;
@@ -85,6 +85,11 @@
   #profileBadge{position:absolute;bottom:42px;right:14px;background:#062d3bcc;border:1px solid #6eb9c5;border-radius:999px;padding:7px 12px;font: .75rem system-ui,sans-serif}
   #storyBeat{position:fixed;inset:0;z-index:30;display:none;align-items:center;justify-content:center;padding:18px;background:#00131dcc}
   #storyBeat.show{display:flex}
+  body.is-touch #profileBadge{right:auto;left:22px;bottom:166px}
+  #fatal{position:fixed;left:12px;right:12px;top:70px;z-index:60;display:none;padding:14px 16px;border-radius:14px;background:#2a0f12f2;border:1px solid #ff9a86;color:#ffe3dc;font:.8rem/1.45 system-ui,sans-serif;pointer-events:auto;overflow-wrap:anywhere}
+  #fatal.show{display:block}
+  #fatal b{display:block;margin-bottom:6px;font-size:.9rem}
+  #fatal button{margin-top:10px;font:600 .85rem system-ui,sans-serif;padding:9px 16px;border-radius:999px;border:1px solid #ffb4a3;background:#5a1f22;color:#fff}
   @media(max-width:520px){.glass-card{padding:19px}.chapter-grid{grid-template-columns:1fr}#profileBadge{bottom:14px;right:12px}}
 
 </style>
@@ -162,6 +167,8 @@
   <div id="keys">J journal · M mute · Esc release mouse</div>
 </div>
 
+<div id="fatal"><b id="fatalTitle">3D problem</b><span id="fatalMsg"></span><br><button id="fatalReload">RELOAD</button></div>
+
 <!-- ===== Mobile controls ===== -->
 <div id="touch">
   <div id="stick"><div id="nub"></div></div>
@@ -188,7 +195,14 @@
   window.addEventListener('unhandledrejection', function (e) {
     reportStartupError(e.reason && (e.reason.message || e.reason) || 'Unknown loading error');
   });
-  window.__sunkenMarketStartupError = reportStartupError;
+  window.__sunkenFatal = function (title, message) {
+    const box = document.getElementById('fatal'); if (!box) return;
+    document.getElementById('fatalTitle').textContent = title;
+    document.getElementById('fatalMsg').textContent = String(message || '').slice(0, 400);
+    box.classList.add('show');
+    const b = document.getElementById('fatalReload'); if (b) b.onclick = function () { location.reload(); };
+  };
+  window.__sunkenMarketStartupError = function (m) { reportStartupError(m); window.__sunkenFatal('3D startup failed', m); };
 })();
 </script>
 
@@ -237,6 +251,9 @@ const CONFIG = {
   pickupRadius:2.8,
   // Performance-first defaults: bloom and high-DPI rendering are expensive on phones.
   bloom:       false,
+  // The world is built from built-in models before GLBs finish downloading, so downloaded GLBs were never
+  // placed in the scene. Leave off to save phone memory; add ?models=1 to the URL to test downloads.
+  detailedModels: /[?&]models=1/.test(location.search),
   density:     IS_TOUCH ? 0.28 : 0.45 // scatter amount for coral/shells
 };
 
@@ -433,7 +450,7 @@ renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
 document.body.prepend(renderer.domElement);
-renderer.domElement.addEventListener('webglcontextlost', event => { event.preventDefault(); window.__sunkenMarketStartupError?.('The phone browser lost its WebGL graphics context. Close other tabs and reload.'); });
+renderer.domElement.addEventListener('webglcontextlost', event => { event.preventDefault(); window.__sunkenFatal?.('Graphics context lost', 'The browser reset the 3D graphics (usually memory pressure on phones). Close other tabs, then reload.'); });
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(FOG_COLOR);
@@ -894,8 +911,22 @@ addEventListener('resize', () => {
 
 const clock = new THREE.Clock();
 let lastTouchFrame = 0;
+let renderedFrames = 0, lastSeenFrames = -1, frameFailed = false;
 function frame(now = 0) {
   requestAnimationFrame(frame);
+  try { frameBody(now); renderedFrames++; }
+  catch (e) {
+    console.error('Frame failed:', e);
+    if (!frameFailed) { frameFailed = true; window.__sunkenFatal?.('3D frame error', (e && (e.stack || e.message)) || e); }
+  }
+}
+setInterval(() => {   // watchdog: running but nothing drawn for 3s while the tab is visible
+  if (document.visibilityState !== 'visible' || frameFailed) return;
+  if (renderer.getContext().isContextLost()) { frameFailed = true; window.__sunkenFatal?.('Graphics context lost', 'The browser reset the 3D graphics. Close other tabs, then reload.'); return; }
+  if (running && renderedFrames === lastSeenFrames) { frameFailed = true; window.__sunkenFatal?.('3D stopped rendering', 'No frames were drawn for 3 seconds.'); }
+  lastSeenFrames = renderedFrames;
+}, 3000);
+function frameBody(now) {
   // Keep lower-powered touch devices near 30 FPS instead of repeatedly rendering
   // frames they cannot sustain. Desktop remains uncapped.
   if (IS_TOUCH && now - lastTouchFrame < 1000 / 30) return;
@@ -932,7 +963,8 @@ function prepareFallbackTemplates() {
 
 async function boot() {
   initMeta();
-  if (IS_TOUCH) document.body.classList.add('is-touch');
+  if (IS_TOUCH) { document.body.classList.add('is-touch'); $('journal').classList.add('collapsed'); }
+  $('journal').addEventListener('click', () => $('journal').classList.toggle('collapsed'));
   const info = $('loadinfo');
 
   // Render the complete procedural world first. GLB downloads happen in the background.
@@ -948,6 +980,7 @@ async function boot() {
   frame();
 
   // A failed or slow model request can no longer prevent the game from starting.
+  if (!CONFIG.detailedModels) { info.textContent = 'The market is ready.'; return; }
   loadAssets((i, n, c) => {
     info.textContent = i === n
       ? (c ? `${c}/${n} detailed models loaded. You can dive in.` : 'Using built-in 3D models. You can dive in.')
