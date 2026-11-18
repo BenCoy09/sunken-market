@@ -9,10 +9,8 @@
   * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
   html,body { margin:0; height:100%; overflow:hidden; background:#06242f; color:var(--ink);
     font-family:"Iowan Old Style","Palatino Linotype",Georgia,serif; touch-action:none; user-select:none; }
-  canvas { display:block; position:fixed; inset:0; z-index:0; }
-  body > canvas { pointer-events:none; }
-  #hud { z-index:10; }
-  .overlay { z-index:20; }
+  canvas { display:block; position:fixed; inset:0; z-index:0; width:100%; height:100%; }
+  body > .overlay, body > #hud, body > #touch, body > #storyBeat { position:fixed; }
 
   /* ---------- Overlays (start / win) ---------- */
   .overlay { position:fixed; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -170,6 +168,29 @@
   <div id="btnUp" class="tbtn">▲</div>
   <div id="btnDown" class="tbtn">▼</div>
 </div>
+
+<script>
+// Keep startup failures visible on mobile instead of leaving a silent blank scene.
+(function () {
+  function reportStartupError(message) {
+    const box = document.getElementById('loadinfo');
+    if (box) {
+      box.textContent = '3D startup failed: ' + String(message).slice(0, 180) + ' · Refresh to retry.';
+      box.style.opacity = '1'; box.style.color = '#ffb6a8'; box.style.maxWidth = ' min(90vw, 34rem)';
+      box.style.overflowWrap = 'anywhere';
+    }
+    const button = document.getElementById('goBtn');
+    if (button) { button.disabled = true; button.textContent = '3D FAILED TO LOAD'; }
+  }
+  window.addEventListener('error', function (e) {
+    if (e && (e.message || e.error)) reportStartupError(e.message || e.error);
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    reportStartupError(e.reason && (e.reason.message || e.reason) || 'Unknown loading error');
+  });
+  window.__sunkenMarketStartupError = reportStartupError;
+})();
+</script>
 
 <script type="importmap">
 { "imports": {
@@ -377,7 +398,10 @@ async function loadAssets(onProgress) {
   await Promise.all(keys.map(async key => {
     const def = ASSETS[key]; let root, anims = [];
     try {
-      const gltf = await loader.loadAsync(def.url);
+      const gltf = await Promise.race([
+        loader.loadAsync(def.url),
+        new Promise((_, reject) => setTimeout(() => reject(new Error('Model request timed out')), 12000))
+      ]);
       root = gltf.scene; anims = gltf.animations || []; custom++;
     } catch (e) { console.warn('GLB failed, using stand-in:', def.url, e); root = def.fallback(); }
     const t = normalize(root, def.size, def.pivot); t.userData.anims = anims; templates[key] = t;
@@ -408,15 +432,8 @@ renderer.setPixelRatio(Math.min(devicePixelRatio || 1, MAX_PIXEL_RATIO));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
-renderer.domElement.id = 'sunken-market-canvas';
-renderer.domElement.style.position = 'fixed';
-renderer.domElement.style.inset = '0';
-renderer.domElement.style.width = '100vw';
-renderer.domElement.style.height = '100dvh';
-renderer.domElement.style.zIndex = '0';
-renderer.domElement.style.display = 'block';
-renderer.domElement.style.pointerEvents = 'none';
 document.body.prepend(renderer.domElement);
+renderer.domElement.addEventListener('webglcontextlost', event => { event.preventDefault(); window.__sunkenMarketStartupError?.('The phone browser lost its WebGL graphics context. Close other tabs and reload.'); });
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(FOG_COLOR);
@@ -727,12 +744,7 @@ const cam = { yaw: 0, pitch: 0.12, pos: new THREE.Vector3() };
 const keys = {}; const touch = { x: 0, y: 0, up: false, down: false };
 
 function buildPlayerRig() {
-  player.model = templates.player;
-  player.rig.add(player.model);
-  player.rig.position.copy(player.pos);
-  player.rig.visible = true;
-  player.model.visible = true;
-  scene.add(player.rig);
+  player.model = templates.player; player.rig.add(player.model); player.rig.position.copy(player.pos); scene.add(player.rig);
   const anims = player.model.userData.anims;
   if (anims && anims.length) { player.mixer = new THREE.AnimationMixer(player.model); player.mixer.clipAction(anims[0]).play(); }
   player.rig.rotation.y = Math.PI;                        // start facing -Z (toward the plaza)
@@ -884,55 +896,37 @@ const clock = new THREE.Clock();
 let lastTouchFrame = 0;
 function frame(now = 0) {
   requestAnimationFrame(frame);
+  // Keep lower-powered touch devices near 30 FPS instead of repeatedly rendering
+  // frames they cannot sustain. Desktop remains uncapped.
   if (IS_TOUCH && now - lastTouchFrame < 1000 / 30) return;
   if (IS_TOUCH) lastTouchFrame = now;
   const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
-
-  // Render the world first. A non-essential animation/UI update must never
-  // prevent the WebGL scene from being drawn on mobile Safari.
-  try {
-    renderer.render(scene, camera);
-  } catch (err) {
-    console.error('Sunken Market WebGL render error:', err);
-    return;
+  if (running) { updatePlayer(dt, t); updateCamera(dt); updateItems(t, dt); if (!won) updateCompass(); }
+  else { // slow cinematic drift behind the start screen
+    cam.yaw += dt * 0.05; updateCamera(dt);
   }
-
-  try {
-    if (running) {
-      updatePlayer(dt, t);
-      updateCamera(dt);
-      updateItems(t, dt);
-      if (!won) updateCompass();
-    } else {
-      cam.yaw += dt * 0.05;
-      updateCamera(dt);
-    }
-
-    caustics.offset.set(t * 0.012, t * 0.008);
-    for (const shaft of shafts) {
-      shaft.rotation.z = Math.sin(t * 0.15 + shaft.userData.ph) * 0.06;
-      shaft.material.opacity = 0.045 + Math.sin(t * 0.4 + shaft.userData.ph) * 0.02;
-    }
-    const sp = snowPos, px = player.pos.x, py = player.pos.y, pz = player.pos.z, H = SNOW_BOX / 2;
-    for (let i = 0; i < SNOW; i++) {
-      const j = i * 3;
-      sp[j + 1] -= dt * 0.15;
-      sp[j] += Math.sin(t * 0.3 + i) * dt * 0.1;
-      if (sp[j] - px > H) sp[j] -= SNOW_BOX; else if (sp[j] - px < -H) sp[j] += SNOW_BOX;
-      if (sp[j + 1] - py > H) sp[j + 1] -= SNOW_BOX; else if (sp[j + 1] - py < -H) sp[j + 1] += SNOW_BOX;
-      if (sp[j + 2] - pz > H) sp[j + 2] -= SNOW_BOX; else if (sp[j + 2] - pz < -H) sp[j + 2] += SNOW_BOX;
-    }
-    snowGeo.attributes.position.needsUpdate = true;
-    updateFish(t);
-  } catch (err) {
-    console.error('Sunken Market update error:', err);
+  // Ambient motion
+  caustics.offset.set(t * 0.012, t * 0.008);
+  for (const s of shafts) { s.rotation.z = Math.sin(t * 0.15 + s.userData.ph) * 0.06; s.material.opacity = 0.045 + Math.sin(t * 0.4 + s.userData.ph) * 0.02; }
+  const sp = snowPos, px = player.pos.x, py = player.pos.y, pz = player.pos.z, H = SNOW_BOX / 2;
+  for (let i = 0; i < SNOW; i++) {
+    const j = i * 3; sp[j + 1] -= dt * 0.15; sp[j] += Math.sin(t * 0.3 + i) * dt * 0.1;
+    if (sp[j] - px > H) sp[j] -= SNOW_BOX; else if (sp[j] - px < -H) sp[j] += SNOW_BOX;
+    if (sp[j + 1] - py > H) sp[j + 1] -= SNOW_BOX; else if (sp[j + 1] - py < -H) sp[j + 1] += SNOW_BOX;
+    if (sp[j + 2] - pz > H) sp[j + 2] -= SNOW_BOX; else if (sp[j + 2] - pz < -H) sp[j + 2] += SNOW_BOX;
   }
+  snowGeo.attributes.position.needsUpdate = true;
+  updateFish(t);
+  composer ? composer.render() : renderer.render(scene, camera);
+}
 
-  // Draw again with the latest camera and object transforms.
-  try {
-    renderer.render(scene, camera);
-  } catch (err) {
-    console.error('Sunken Market render error:', err);
+function prepareFallbackTemplates() {
+  // Build every stand-in synchronously so the playable world never waits for network assets.
+  for (const [key, def] of Object.entries(ASSETS)) {
+    const root = def.fallback();
+    const template = normalize(root, def.size, def.pivot);
+    template.userData.anims = [];
+    templates[key] = template;
   }
 }
 
@@ -940,22 +934,33 @@ async function boot() {
   initMeta();
   if (IS_TOUCH) document.body.classList.add('is-touch');
   const info = $('loadinfo');
-  const custom = await loadAssets((i, n, c) => { info.textContent = `Preparing the market… ${i}/${n}`; });
+
+  // Render the complete procedural world first. GLB downloads happen in the background.
+  prepareFallbackTemplates();
   buildWorld(); buildFish(); buildItems(); buildPlayerRig(); setupComposer();
-  player.rig.position.copy(player.pos);
-  player.rig.visible = true;
-  cam.pos.set(0, 12, 60);
-  camera.position.copy(cam.pos);
-  camera.lookAt(player.pos.x, player.pos.y + 0.9, player.pos.z);
-  info.textContent = custom ? `${custom}/${Object.keys(ASSETS).length} custom GLB models loaded` : 'No GLB models found: using built-in stand-ins (see ASSET_PROMPTS.md)';
+  cam.pos.set(0, 12, 60); camera.position.copy(cam.pos);
   const btn = $('goBtn'); btn.disabled = false; btn.textContent = 'DIVE IN';
   btn.onclick = () => {
     if(!saveData.name){showPanel('profilePanel');toast('Choose your explorer name first.');return;}
     openStory(0);
   };
+  info.textContent = 'The market is ready. Loading detailed models in the background…';
   frame();
+
+  // A failed or slow model request can no longer prevent the game from starting.
+  loadAssets((i, n, c) => {
+    info.textContent = i === n
+      ? (c ? `${c}/${n} detailed models loaded. You can dive in.` : 'Using built-in 3D models. You can dive in.')
+      : `Market ready · loading detailed models ${i}/${n}`;
+  }).catch(error => {
+    console.warn('Optional model downloads failed; procedural models remain active.', error);
+    info.textContent = 'Market ready · using built-in 3D models.';
+  });
 }
-boot();
+boot().catch(error => {
+  console.error('Sunken Market boot failed:', error);
+  window.__sunkenMarketStartupError?.(error?.stack || error?.message || error);
+});
 </script>
 </body>
 </html>
